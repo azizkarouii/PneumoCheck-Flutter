@@ -1,0 +1,45 @@
+name: pneumocheck_frontend
+description: PneumoCheck - Détection de Pneumonie par IA
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # HTTP
+  dio: ^5.4.3+1
+
+  # Secure storage (token JWT)
+  flutter_secure_storage: ^9.0.0
+
+  # Image picker
+  image_picker: ^1.1.2
+  camera: ^0.11.0+2
+
+  # Graphiques
+  fl_chart: ^0.68.0
+
+  # PDF reporting
+  pdf: ^3.10.8
+  printing: ^5.12.0
+
+  # UI
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.9
+  riverpod_generator: ^2.4.0
+
+flutter:
+  uses-material-design: true
