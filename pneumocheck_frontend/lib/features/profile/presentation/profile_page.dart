@@ -226,12 +226,6 @@ class _ProfileContentState extends ConsumerState<_ProfileContent> {
             const SizedBox(height: 8),
             Center(
               child: Text(
-                'Email du compte',
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-            ),
-            Center(
-              child: Text(
                 profile.createdAt.isNotEmpty
                     ? 'Membre depuis ${profile.createdAt.substring(0, 10)}'
                     : 'Membre',

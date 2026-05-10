@@ -472,21 +472,50 @@ class _ResultCard extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        if (result.heatmap.isNotEmpty) ...[
+        if (result.imageB64.isNotEmpty || result.heatmap.isNotEmpty) ...[
           const Text(
-            'Carte Grad-CAM - zones analysées',
+            'Comparaison Grad-CAM',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
           ),
           const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Image.memory(
-              base64Decode(result.heatmap),
-              fit: BoxFit.contain,
-              width: double.infinity,
-              height: 220,
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (result.imageB64.isNotEmpty)
+                Expanded(
+                  child: _ImagePreviewCard(
+                    title: 'Image originale',
+                    imageBytes: base64Decode(result.imageB64),
+                  ),
+                ),
+              if (result.imageB64.isNotEmpty && result.heatmap.isNotEmpty)
+                const SizedBox(width: 12),
+              if (result.heatmap.isNotEmpty)
+                Expanded(
+                  child: _ImagePreviewCard(
+                    title: 'Heatmap Grad-CAM',
+                    imageBytes: base64Decode(result.heatmap),
+                  ),
+                ),
+            ],
           ),
+          if (result.overlay.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Text(
+              'Overlay Grad-CAM',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.memory(
+                base64Decode(result.overlay),
+                fit: BoxFit.contain,
+                width: double.infinity,
+                height: 220,
+              ),
+            ),
+          ],
         ],
         const SizedBox(height: 16),
         SizedBox(
@@ -502,7 +531,8 @@ class _ResultCard extends StatelessWidget {
                     label: result.label,
                     confidence: result.confidence,
                     heatmap: result.heatmap,
-                    imageB64: '',
+                    imageB64: result.imageB64,
+                    overlay: result.overlay,
                     createdAt: DateTime.now().toString(),
                   ),
                   originalImageBytes: originalImageBytes,
@@ -519,6 +549,43 @@ class _ResultCard extends StatelessWidget {
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
               ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImagePreviewCard extends StatelessWidget {
+  final String title;
+  final Uint8List imageBytes;
+
+  const _ImagePreviewCard({
+    required this.title,
+    required this.imageBytes,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+        ),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            color: Colors.black12,
+            height: 220,
+            width: double.infinity,
+            alignment: Alignment.center,
+            child: Image.memory(
+              imageBytes,
+              fit: BoxFit.contain,
             ),
           ),
         ),

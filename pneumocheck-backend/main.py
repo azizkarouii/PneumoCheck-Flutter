@@ -124,52 +124,90 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 
 # ── GRAD-CAM ──────────────────────────────────────────────────────────────────
 
-def generate_gradcam(img_array: np.ndarray) -> str:
-    # Trouver la dernière couche Conv2D dans EfficientNetB0
-    efficientnet = model.layers[0]
-    last_conv_layer_name = None
-    for layer in efficientnet.layers:
+def generate_gradcam(img_array: np.ndarray, image_bytes: bytes) -> tuple[str, str]:
+    # Utiliser la sortie du dernier conv, puis rejouer seulement la queue du backbone et la tête finale.
+    backbone = model.layers[0]
+    last_conv_layer = None
+    last_conv_index = None
+    for layer in reversed(backbone.layers):
         if isinstance(layer, tf.keras.layers.Conv2D):
-            last_conv_layer_name = layer.name
+            last_conv_layer = layer
+            last_conv_index = backbone.layers.index(layer)
+            break
 
-    # Construire le grad model depuis les inputs du modèle séquentiel
-    grad_model = tf.keras.models.Model(
-        inputs=efficientnet.input,
-        outputs=[
-            efficientnet.get_layer(last_conv_layer_name).output,
-            efficientnet.output
-        ]
-    )
+    if last_conv_layer is None:
+        raise RuntimeError("Aucune couche Conv2D trouvée pour Grad-CAM")
 
     with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array)
-        # Passer dans la tête de classification
+        conv_model = tf.keras.models.Model(backbone.input, last_conv_layer.output)
+        conv_outputs = conv_model(img_array)
+        tape.watch(conv_outputs)
+
+        # Rejouer uniquement la queue post-conv + tête de classification
         x = conv_outputs
+        tail_layers = list(backbone.layers[last_conv_index + 1 :]) + list(model.layers[1:])
+        for layer in tail_layers:
+            if isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.Dropout)):
+                x = layer(x, training=False)
+            else:
+                x = layer(x)
+
+        predictions = x
         loss = predictions[:, 0]
 
-    grads   = tape.gradient(loss, conv_outputs)
-    pooled  = tf.reduce_mean(grads, axis=(0, 1, 2))
-    heatmap = conv_outputs[0] @ pooled[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap).numpy()
+    grads = tape.gradient(loss, conv_outputs)
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+
+    conv_outputs = conv_outputs[0]
+    heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1).numpy()
     heatmap = np.maximum(heatmap, 0)
-    if heatmap.max() != 0:
-        heatmap = heatmap / heatmap.max()
 
-    # Redimensionner et coloriser
-    heatmap_resized = cv2.resize(heatmap, (224, 224))
-    heatmap_colored = cv2.applyColorMap(
-        np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET
+    # Normaliser
+    if heatmap.max() > 0:
+        heatmap = heatmap / (heatmap.max() + 1e-8)
+
+    # Resize bilinéaire + lissage
+    heatmap_resized = cv2.resize(heatmap, (224, 224), interpolation=cv2.INTER_LINEAR)
+    try:
+        heatmap_resized = cv2.GaussianBlur(heatmap_resized, (9, 9), 0)
+    except Exception:
+        pass
+
+    if heatmap_resized.max() > 0:
+        heatmap_resized = heatmap_resized / (heatmap_resized.max() + 1e-8)
+
+    # Supprimer les activations faibles pour rendre la carte plus lisible.
+    cutoff = np.percentile(heatmap_resized, 70)
+    heatmap_resized = np.where(heatmap_resized >= cutoff, heatmap_resized, 0.0)
+
+    # Donner un léger prior visuel au thorax central pour réduire les bords parasites.
+    yy, xx = np.mgrid[0:224, 0:224]
+    thorax_mask = np.exp(-(((xx - 112.0) ** 2) / (2.0 * 88.0 ** 2) + ((yy - 122.0) ** 2) / (2.0 * 96.0 ** 2)))
+    heatmap_resized = heatmap_resized * thorax_mask
+
+    if heatmap_resized.max() > 0:
+        heatmap_resized = heatmap_resized / (heatmap_resized.max() + 1e-8)
+
+    # Option: léger ajustement de contraste
+    heatmap_resized = np.power(np.clip(heatmap_resized, 0, 1), 1.15)
+
+    # Colorize and overlay
+    heatmap_uint8 = np.uint8(255 * heatmap_resized)
+    heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+
+    original = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
+    original = np.array(original, dtype=np.uint8)
+    original_bgr = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
+    alpha = 0.35
+    overlay = cv2.addWeighted(original_bgr, 1.0 - alpha, heatmap_colored, alpha, 0)
+
+    # Encode
+    _, heatmap_buffer = cv2.imencode('.jpg', heatmap_colored)
+    _, overlay_buffer = cv2.imencode('.jpg', overlay)
+    return (
+        base64.b64encode(heatmap_buffer).decode('utf-8'),
+        base64.b64encode(overlay_buffer).decode('utf-8')
     )
-
-    # Superposer sur l'image originale
-    original = img_array[0]
-    original = (original - original.min()) / (original.max() - original.min())
-    original = np.uint8(255 * original)
-    superimposed = cv2.addWeighted(original, 0.6, heatmap_colored, 0.4, 0)
-
-    # Encoder en base64
-    _, buffer = cv2.imencode('.jpg', superimposed)
-    return base64.b64encode(buffer).decode('utf-8')
 
 # ── PREPROCESSING ─────────────────────────────────────────────────────────────
 
@@ -261,7 +299,7 @@ async def predict(
     confidence = prediction if prediction > 0.5 else 1 - prediction
 
     # Grad-CAM
-    heatmap_b64 = generate_gradcam(img_array)
+    heatmap_b64, overlay_b64 = generate_gradcam(img_array, image_bytes)
 
     # Image originale en base64
     image_b64 = base64.b64encode(image_bytes).decode('utf-8')
@@ -280,7 +318,9 @@ async def predict(
         "scan_id":    scan_id,
         "label":      label,
         "confidence": round(confidence * 100, 2),
-        "heatmap":    heatmap_b64
+        "image_b64":  image_b64,
+        "heatmap":    heatmap_b64,
+        "overlay":    overlay_b64
     }
 
 # ── ROUTES HISTORIQUE ─────────────────────────────────────────────────────────

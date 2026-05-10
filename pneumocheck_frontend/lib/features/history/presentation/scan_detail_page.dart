@@ -28,12 +28,28 @@ class ScanDetailPage extends StatelessWidget {
     return base64Decode(scan.imageB64);
   }
 
+  Uint8List? _effectiveHeatmapBytes() {
+    if (scan.heatmap.isEmpty) {
+      return null;
+    }
+
+    return base64Decode(scan.heatmap);
+  }
+
+  Uint8List? _effectiveOverlayBytes() {
+    if (scan.overlay.isNotEmpty) {
+      return base64Decode(scan.overlay);
+    }
+
+    return null;
+  }
+
   Future<Uint8List> _generatePdf() async {
     final pdf = pw.Document();
     final isPneumonia = scan.label == 'PNEUMONIA';
-    final heatmapBytes =
-        scan.heatmap.isNotEmpty ? base64Decode(scan.heatmap) : null;
     final originalBytes = _effectiveOriginalBytes();
+    final heatmapBytes = _effectiveHeatmapBytes();
+    final overlayBytes = _effectiveOverlayBytes();
 
     pdf.addPage(
       pw.Page(
@@ -108,64 +124,72 @@ class ScanDetailPage extends StatelessWidget {
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
                   pw.Expanded(
-                    child: pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                      children: [
-                        pw.Text(
-                          'Image initiale',
-                          textAlign: pw.TextAlign.center,
-                          style: const pw.TextStyle(fontSize: 10),
-                        ),
-                        pw.SizedBox(height: 6),
-                        pw.Container(
-                          height: 150,
-                          alignment: pw.Alignment.center,
-                          decoration: pw.BoxDecoration(
-                            border: pw.Border.all(color: PdfColors.grey300),
-                            borderRadius: pw.BorderRadius.circular(6),
-                          ),
-                          child: originalBytes != null
-                              ? pw.Image(
-                                  pw.MemoryImage(originalBytes),
-                                  fit: pw.BoxFit.contain,
-                                )
-                              : pw.Text(
-                                  'Image non disponible',
-                                  style: const pw.TextStyle(fontSize: 10),
-                                ),
-                        ),
-                      ],
+                    child: _pdfImagePanel(
+                      title: 'Image initiale',
+                      child: originalBytes != null
+                          ? pw.Image(
+                              pw.MemoryImage(originalBytes),
+                              fit: pw.BoxFit.contain,
+                            )
+                          : pw.Text(
+                              'Image non disponible',
+                              style: const pw.TextStyle(fontSize: 10),
+                            ),
                     ),
                   ),
-                  pw.SizedBox(width: 12),
+                  pw.SizedBox(width: 8),
                   pw.Expanded(
-                    child: pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-                      children: [
-                        pw.Text(
-                          'Résultat Grad-CAM',
-                          textAlign: pw.TextAlign.center,
-                          style: const pw.TextStyle(fontSize: 10),
-                        ),
-                        pw.SizedBox(height: 6),
-                        pw.Container(
-                          height: 150,
-                          alignment: pw.Alignment.center,
-                          decoration: pw.BoxDecoration(
-                            border: pw.Border.all(color: PdfColors.grey300),
-                            borderRadius: pw.BorderRadius.circular(6),
-                          ),
-                          child: heatmapBytes != null
-                              ? pw.Image(
-                                  pw.MemoryImage(heatmapBytes),
-                                  fit: pw.BoxFit.contain,
-                                )
-                              : pw.Text(
-                                  'Carte non disponible',
-                                  style: const pw.TextStyle(fontSize: 10),
-                                ),
-                        ),
-                      ],
+                    child: _pdfImagePanel(
+                      title: 'Heatmap Grad-CAM',
+                      child: heatmapBytes != null
+                          ? pw.Image(
+                              pw.MemoryImage(heatmapBytes),
+                              fit: pw.BoxFit.contain,
+                            )
+                          : pw.Text(
+                              'Carte non disponible',
+                              style: const pw.TextStyle(fontSize: 10),
+                            ),
+                    ),
+                  ),
+                  pw.SizedBox(width: 8),
+                  pw.Expanded(
+                    child: _pdfImagePanel(
+                      title: 'Overlay Grad-CAM',
+                      child: overlayBytes != null
+                          ? pw.Image(
+                              pw.MemoryImage(overlayBytes),
+                              fit: pw.BoxFit.contain,
+                            )
+                          : pw.Stack(
+                              children: [
+                                if (originalBytes != null)
+                                  pw.Positioned.fill(
+                                    child: pw.Image(
+                                      pw.MemoryImage(originalBytes),
+                                      fit: pw.BoxFit.contain,
+                                    ),
+                                  ),
+                                if (heatmapBytes != null)
+                                  pw.Positioned.fill(
+                                    child: pw.Opacity(
+                                      opacity: 0.35,
+                                      child: pw.Image(
+                                        pw.MemoryImage(heatmapBytes),
+                                        fit: pw.BoxFit.contain,
+                                      ),
+                                    ),
+                                  ),
+                                if (originalBytes == null &&
+                                    heatmapBytes == null)
+                                  pw.Center(
+                                    child: pw.Text(
+                                      'Overlay non disponible',
+                                      style: const pw.TextStyle(fontSize: 10),
+                                    ),
+                                  ),
+                              ],
+                            ),
                     ),
                   ),
                 ],
@@ -218,9 +242,9 @@ class ScanDetailPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPneumonia = scan.label == 'PNEUMONIA';
     final color = isPneumonia ? Colors.red : Colors.green;
-    final heatmapBytes =
-        scan.heatmap.isNotEmpty ? base64Decode(scan.heatmap) : null;
     final originalBytes = _effectiveOriginalBytes();
+    final heatmapBytes = _effectiveHeatmapBytes();
+    final overlayBytes = _effectiveOverlayBytes();
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F8FF),
@@ -315,34 +339,70 @@ class ScanDetailPage extends StatelessWidget {
               const SizedBox(height: 20),
             ],
             const Text(
-              'Carte Grad-CAM - zones analysées',
+              'Comparaison Grad-CAM',
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            if (heatmapBytes != null)
-              SizedBox(
-                height: 180,
-                width: double.infinity,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(
-                    heatmapBytes,
-                    fit: BoxFit.contain,
-                    width: double.infinity,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: _previewCard(
+                    title: 'Image originale',
+                    child: originalBytes != null
+                        ? Image.memory(
+                            originalBytes,
+                            fit: BoxFit.contain,
+                          )
+                        : const Text('Image non disponible'),
                   ),
                 ),
-              )
-            else
-              Container(
-                height: 220,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey.shade300),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _previewCard(
+                    title: 'Heatmap Grad-CAM',
+                    child: heatmapBytes != null
+                        ? Image.memory(
+                            heatmapBytes,
+                            fit: BoxFit.contain,
+                          )
+                        : const Text('Carte non disponible'),
+                  ),
                 ),
-                child: const Text('Carte non disponible'),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _previewCard(
+                    title: 'Overlay Grad-CAM',
+                    child: overlayBytes != null
+                        ? Image.memory(
+                            overlayBytes,
+                            fit: BoxFit.contain,
+                          )
+                        : (originalBytes != null && heatmapBytes != null)
+                            ? Stack(
+                                children: [
+                                  Positioned.fill(
+                                    child: Image.memory(
+                                      originalBytes,
+                                      fit: BoxFit.contain,
+                                    ),
+                                  ),
+                                  Positioned.fill(
+                                    child: Opacity(
+                                      opacity: 0.35,
+                                      child: Image.memory(
+                                        heatmapBytes,
+                                        fit: BoxFit.contain,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : const Text('Overlay non disponible'),
+                  ),
+                ),
+              ],
+            ),
             const SizedBox(height: 20),
             Container(
               padding: const EdgeInsets.all(14),
@@ -396,6 +456,52 @@ class ScanDetailPage extends StatelessWidget {
       ),
     );
   }
+}
+
+pw.Widget _pdfImagePanel({required String title, required pw.Widget child}) {
+  return pw.Column(
+    crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+    children: [
+      pw.Text(
+        title,
+        textAlign: pw.TextAlign.center,
+        style: const pw.TextStyle(fontSize: 10),
+      ),
+      pw.SizedBox(height: 6),
+      pw.Container(
+        height: 150,
+        alignment: pw.Alignment.center,
+        decoration: pw.BoxDecoration(
+          border: pw.Border.all(color: PdfColors.grey300),
+          borderRadius: pw.BorderRadius.circular(6),
+        ),
+        child: child,
+      ),
+    ],
+  );
+}
+
+Widget _previewCard({required String title, required Widget child}) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        title,
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 6),
+      Container(
+        height: 180,
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: Center(child: child),
+      ),
+    ],
+  );
 }
 
 class _LegendRow extends StatelessWidget {
