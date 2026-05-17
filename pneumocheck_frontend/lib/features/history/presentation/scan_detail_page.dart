@@ -140,56 +140,36 @@ class ScanDetailPage extends StatelessWidget {
                   pw.SizedBox(width: 8),
                   pw.Expanded(
                     child: _pdfImagePanel(
-                      title: 'Heatmap Grad-CAM',
-                      child: heatmapBytes != null
-                          ? pw.Image(
-                              pw.MemoryImage(heatmapBytes),
-                              fit: pw.BoxFit.contain,
-                            )
-                          : pw.Text(
-                              'Carte non disponible',
-                              style: const pw.TextStyle(fontSize: 10),
-                            ),
-                    ),
-                  ),
-                  pw.SizedBox(width: 8),
-                  pw.Expanded(
-                    child: _pdfImagePanel(
                       title: 'Overlay Grad-CAM',
                       child: overlayBytes != null
                           ? pw.Image(
                               pw.MemoryImage(overlayBytes),
                               fit: pw.BoxFit.contain,
                             )
-                          : pw.Stack(
-                              children: [
-                                if (originalBytes != null)
-                                  pw.Positioned.fill(
-                                    child: pw.Image(
-                                      pw.MemoryImage(originalBytes),
-                                      fit: pw.BoxFit.contain,
-                                    ),
-                                  ),
-                                if (heatmapBytes != null)
-                                  pw.Positioned.fill(
-                                    child: pw.Opacity(
-                                      opacity: 0.35,
+                          : (originalBytes != null && heatmapBytes != null)
+                              ? pw.Stack(
+                                  children: [
+                                    pw.Positioned.fill(
                                       child: pw.Image(
-                                        pw.MemoryImage(heatmapBytes),
+                                        pw.MemoryImage(originalBytes),
                                         fit: pw.BoxFit.contain,
                                       ),
                                     ),
-                                  ),
-                                if (originalBytes == null &&
-                                    heatmapBytes == null)
-                                  pw.Center(
-                                    child: pw.Text(
-                                      'Overlay non disponible',
-                                      style: const pw.TextStyle(fontSize: 10),
+                                    pw.Positioned.fill(
+                                      child: pw.Opacity(
+                                        opacity: 0.35,
+                                        child: pw.Image(
+                                          pw.MemoryImage(heatmapBytes),
+                                          fit: pw.BoxFit.contain,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                              ],
-                            ),
+                                  ],
+                                )
+                              : pw.Text(
+                                  'Overlay non disponible',
+                                  style: const pw.TextStyle(fontSize: 10),
+                                ),
                     ),
                   ),
                 ],
@@ -355,18 +335,6 @@ class ScanDetailPage extends StatelessWidget {
                             fit: BoxFit.contain,
                           )
                         : const Text('Image non disponible'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _previewCard(
-                    title: 'Heatmap Grad-CAM',
-                    child: heatmapBytes != null
-                        ? Image.memory(
-                            heatmapBytes,
-                            fit: BoxFit.contain,
-                          )
-                        : const Text('Carte non disponible'),
                   ),
                 ),
                 const SizedBox(width: 8),

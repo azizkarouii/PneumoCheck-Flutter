@@ -472,7 +472,7 @@ class _ResultCard extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
-        if (result.imageB64.isNotEmpty || result.heatmap.isNotEmpty) ...[
+        if (result.imageB64.isNotEmpty || result.overlay.isNotEmpty) ...[
           const Text(
             'Comparaison Grad-CAM',
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
@@ -488,34 +488,18 @@ class _ResultCard extends StatelessWidget {
                     imageBytes: base64Decode(result.imageB64),
                   ),
                 ),
-              if (result.imageB64.isNotEmpty && result.heatmap.isNotEmpty)
-                const SizedBox(width: 12),
-              if (result.heatmap.isNotEmpty)
-                Expanded(
-                  child: _ImagePreviewCard(
-                    title: 'Heatmap Grad-CAM',
-                    imageBytes: base64Decode(result.heatmap),
-                  ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _ImagePreviewCard(
+                  title: 'Overlay Grad-CAM',
+                  imageBytes: base64Decode(result.overlay.isNotEmpty
+                      ? result.overlay
+                      : result.heatmap),
                 ),
+              ),
             ],
           ),
-          if (result.overlay.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            const Text(
-              'Overlay Grad-CAM',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            const SizedBox(height: 8),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.memory(
-                base64Decode(result.overlay),
-                fit: BoxFit.contain,
-                width: double.infinity,
-                height: 220,
-              ),
-            ),
-          ],
+          const SizedBox(height: 12),
         ],
         const SizedBox(height: 16),
         SizedBox(

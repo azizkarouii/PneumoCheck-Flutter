@@ -125,27 +125,58 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
 # ── GRAD-CAM ──────────────────────────────────────────────────────────────────
 
 def generate_gradcam(img_array: np.ndarray, image_bytes: bytes) -> tuple[str, str]:
-    # Utiliser la sortie du dernier conv, puis rejouer seulement la queue du backbone et la tête finale.
-    backbone = model.layers[0]
+    # Grad-CAM standard + post-traitements pour une carte plus localisée.
+    # Cherche la dernière Conv2D dans le modèle ou ses sous-modèles (backbone).
     last_conv_layer = None
-    last_conv_index = None
-    for layer in reversed(backbone.layers):
+    parent_model = None
+    for layer in reversed(model.layers):
         if isinstance(layer, tf.keras.layers.Conv2D):
             last_conv_layer = layer
-            last_conv_index = backbone.layers.index(layer)
+            parent_model = model
             break
+    if last_conv_layer is None:
+        for layer in reversed(model.layers):
+            if hasattr(layer, "layers"):
+                for sub in reversed(layer.layers):
+                    if isinstance(sub, tf.keras.layers.Conv2D):
+                        last_conv_layer = sub
+                        parent_model = layer
+                        break
+            if last_conv_layer:
+                break
 
     if last_conv_layer is None:
         raise RuntimeError("Aucune couche Conv2D trouvée pour Grad-CAM")
 
+    # Utiliser l'entrée du parent/backbone pour garder la connectivité
+    backbone = parent_model if parent_model is not None else model
+
+    # trouver l'index de la dernière conv dans le backbone
+    last_conv_index = None
+    for idx in range(len(backbone.layers) - 1, -1, -1):
+        if isinstance(backbone.layers[idx], tf.keras.layers.Conv2D):
+            last_conv_layer = backbone.layers[idx]
+            last_conv_index = idx
+            break
+    if last_conv_index is None:
+        raise RuntimeError("Aucune couche Conv2D trouvée dans le backbone pour Grad-CAM")
+
+    conv_model = tf.keras.models.Model(inputs=backbone.input, outputs=last_conv_layer.output)
+
     with tf.GradientTape() as tape:
-        conv_model = tf.keras.models.Model(backbone.input, last_conv_layer.output)
         conv_outputs = conv_model(img_array)
         tape.watch(conv_outputs)
 
-        # Rejouer uniquement la queue post-conv + tête de classification
+        # rejouer la queue du backbone + reste du modèle pour obtenir prédictions connectées
         x = conv_outputs
-        tail_layers = list(backbone.layers[last_conv_index + 1 :]) + list(model.layers[1:])
+        tail_layers = list(backbone.layers[last_conv_index + 1 :])
+        try:
+            backbone_index = list(model.layers).index(backbone)
+            tail_layers += list(model.layers[backbone_index + 1 :])
+        except ValueError:
+            if backbone is not model:
+                tail_layers += list(model.layers[1:])
+
         for layer in tail_layers:
             if isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.Dropout)):
                 x = layer(x, training=False)
@@ -153,55 +184,106 @@ def generate_gradcam(img_array: np.ndarray, image_bytes: bytes) -> tuple[str, st
                 x = layer(x)
 
         predictions = x
-        loss = predictions[:, 0]
+        # Utiliser le logit (pré-activation) pour obtenir des gradients mieux localisés
+        prob = tf.clip_by_value(predictions[:, 0], 1e-7, 1.0 - 1e-7)
+        loss = tf.math.log1p(prob)
 
     grads = tape.gradient(loss, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+    if grads is None:
+        raise RuntimeError("Impossible de calculer les gradients pour Grad-CAM (grads est None)")
 
-    conv_outputs = conv_outputs[0]
-    heatmap = tf.reduce_sum(conv_outputs * pooled_grads, axis=-1).numpy()
+    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2)).numpy()
+    conv_outputs = conv_outputs[0].numpy()  # (h,w,channels)
+
+    # pondérer canaux par gradients
+    for i in range(pooled_grads.shape[-1]):
+        conv_outputs[:, :, i] *= pooled_grads[i]
+
+    heatmap = np.sum(conv_outputs, axis=-1)
     heatmap = np.maximum(heatmap, 0)
+    if np.max(heatmap) > 0:
+        heatmap = heatmap / (np.max(heatmap) + 1e-8)
 
-    # Normaliser
-    if heatmap.max() > 0:
-        heatmap = heatmap / (heatmap.max() + 1e-8)
-
-    # Resize bilinéaire + lissage
+    # resize -> lissage
     heatmap_resized = cv2.resize(heatmap, (224, 224), interpolation=cv2.INTER_LINEAR)
     try:
         heatmap_resized = cv2.GaussianBlur(heatmap_resized, (9, 9), 0)
     except Exception:
         pass
 
-    if heatmap_resized.max() > 0:
-        heatmap_resized = heatmap_resized / (heatmap_resized.max() + 1e-8)
+    # Seuil percentile pour ne garder que les activations fortes (rend la carte plus localisée)
+    pct = 60
+    cutoff = np.percentile(heatmap_resized, pct)
+    heatmap_thresh = np.where(heatmap_resized >= cutoff, heatmap_resized, 0.0)
 
-    # Supprimer les activations faibles pour rendre la carte plus lisible.
-    cutoff = np.percentile(heatmap_resized, 70)
-    heatmap_resized = np.where(heatmap_resized >= cutoff, heatmap_resized, 0.0)
+    # Morphologie : dilatation + closing pour obtenir une zone cohérente
+    try:
+        kernel = np.ones((7, 7), np.uint8)
+        heatmap_uint8 = np.uint8(255 * np.clip(heatmap_thresh, 0, 1))
+        heatmap_morph = cv2.dilate(heatmap_uint8, kernel, iterations=2)
+        heatmap_morph = cv2.morphologyEx(heatmap_morph, cv2.MORPH_CLOSE, kernel, iterations=2)
+        heatmap_resized = heatmap_morph.astype(np.float32) / 255.0
+    except Exception:
+        heatmap_resized = heatmap_thresh
 
-    # Donner un léger prior visuel au thorax central pour réduire les bords parasites.
-    yy, xx = np.mgrid[0:224, 0:224]
-    thorax_mask = np.exp(-(((xx - 112.0) ** 2) / (2.0 * 88.0 ** 2) + ((yy - 122.0) ** 2) / (2.0 * 96.0 ** 2)))
-    heatmap_resized = heatmap_resized * thorax_mask
+    # léger renforcement de contraste
+    heatmap_resized = np.power(np.clip(heatmap_resized, 0, 1), 1.1)
 
-    if heatmap_resized.max() > 0:
-        heatmap_resized = heatmap_resized / (heatmap_resized.max() + 1e-8)
+    # Heuristique améliorée : segmenter les champs pulmonaires puis appliquer le masque
+    try:
+        gray = cv2.cvtColor(original, cv2.COLOR_RGB2GRAY)
+        # corps par Otsu (évite le fond noir)
+        _, body_mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        body_mask = cv2.medianBlur(body_mask, 5)
+        k = np.ones((15, 15), np.uint8)
+        body_mask = cv2.morphologyEx(body_mask, cv2.MORPH_CLOSE, k, iterations=2)
 
-    # Option: léger ajustement de contraste
-    heatmap_resized = np.power(np.clip(heatmap_resized, 0, 1), 1.15)
+        # détecter régions foncées (poumons) par seuillage adaptatif inversé
+        adapt = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 51, 10)
+        lungs_candidate = cv2.bitwise_and(adapt, body_mask)
+        lungs_candidate = cv2.morphologyEx(lungs_candidate, cv2.MORPH_OPEN, np.ones((5,5), np.uint8), iterations=1)
 
-    # Colorize and overlay
+        # garder les deux plus grandes composantes (gauche/droite)
+        contours, _ = cv2.findContours(lungs_candidate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            mask_lungs = np.zeros_like(lungs_candidate)
+            for c in contours[:2]:
+                if cv2.contourArea(c) > 500:  # ignore tiny
+                    cv2.drawContours(mask_lungs, [c], -1, 255, thickness=-1)
+            # dilater légèrement pour couvrir bords
+            mask_lungs = cv2.dilate(mask_lungs, np.ones((11,11), np.uint8), iterations=2)
+        else:
+            mask_lungs = body_mask
+
+        # réduire marges verticales trop hautes/basses
+        h, w = mask_lungs.shape
+        top = int(h * 0.05)
+        bottom = int(h * 0.95)
+        mask_lungs[:top, :] = 0
+        mask_lungs[bottom:, :] = 0
+
+        mask_float = (mask_lungs.astype(np.float32) / 255.0)
+        heatmap_resized = heatmap_resized * mask_float
+        # renormaliser si nécessaire
+        if np.max(heatmap_resized) > 0:
+            heatmap_resized = heatmap_resized / (np.max(heatmap_resized) + 1e-8)
+    except Exception:
+        pass
+
+    # Colorize & overlay
     heatmap_uint8 = np.uint8(255 * heatmap_resized)
     heatmap_colored = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
 
     original = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
     original = np.array(original, dtype=np.uint8)
     original_bgr = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
-    alpha = 0.35
+
+    # alpha plus visible
+    alpha = 0.6
     overlay = cv2.addWeighted(original_bgr, 1.0 - alpha, heatmap_colored, alpha, 0)
 
-    # Encode
+    # Encoder base64
     _, heatmap_buffer = cv2.imencode('.jpg', heatmap_colored)
     _, overlay_buffer = cv2.imencode('.jpg', overlay)
     return (
@@ -298,8 +380,22 @@ async def predict(
     label      = "PNEUMONIA" if prediction > 0.5 else "NORMAL"
     confidence = prediction if prediction > 0.5 else 1 - prediction
 
-    # Grad-CAM
-    heatmap_b64, overlay_b64 = generate_gradcam(img_array, image_bytes)
+    # Grad-CAM: si NORMAL avec très haute confiance, ne pas afficher de hotspot chaud
+    if label == "NORMAL" and confidence >= 0.85:
+        # créer un overlay légèrement bleuté sans hotspots
+        original_img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
+        orig_np = np.array(original_img, dtype=np.uint8)
+        orig_bgr = cv2.cvtColor(orig_np, cv2.COLOR_RGB2BGR)
+        blue_tint = np.full_like(orig_bgr, (255, 0, 0))  # BGR blue
+        overlay_img = cv2.addWeighted(orig_bgr, 0.9, blue_tint, 0.1, 0)
+        empty_heatmap = np.zeros((224, 224), dtype=np.uint8)
+
+        _, heatmap_buffer = cv2.imencode('.jpg', cv2.applyColorMap(empty_heatmap, cv2.COLORMAP_OCEAN))
+        _, overlay_buffer = cv2.imencode('.jpg', overlay_img)
+        heatmap_b64 = base64.b64encode(heatmap_buffer).decode('utf-8')
+        overlay_b64 = base64.b64encode(overlay_buffer).decode('utf-8')
+    else:
+        heatmap_b64, overlay_b64 = generate_gradcam(img_array, image_bytes)
 
     # Image originale en base64
     image_b64 = base64.b64encode(image_bytes).decode('utf-8')
