@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../constants/api_constants.dart';
 
+// Client HTTP centralisé pour l'app: ajoute automatiquement la base URL et le token JWT aux requêtes.
 final dioClientProvider = Provider<DioClient>((ref) => DioClient());
 
 class DioClient {
